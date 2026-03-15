@@ -8,10 +8,14 @@ from sqlalchemy import create_engine, String, ForeignKey, Integer, func, Boolean
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker, relationship, scoped_session, joinedload
 from telegram import Update, ReplyKeyboardMarkup, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardRemove, InputMediaPhoto
 from telegram.constants import ParseMode
+from flask import Flask
+from threading import Thread
 from telegram.ext import (
     Application, CommandHandler, MessageHandler, 
     CallbackQueryHandler, ConversationHandler, ContextTypes, filters
 )
+
+
 
 load_dotenv()
 
@@ -37,6 +41,23 @@ except:
 
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# --- RENDER BEPUL TARIF UCHUN PORT OCHISH ---
+app_flask = Flask('')
+
+@app_flask.route('/')
+def home():
+    return "Bot is running live!"
+
+def run_flask():
+    port = int(os.environ.get('PORT', 10000))
+    app_flask.run(host='0.0.0.0', port=port)
+
+def keep_alive():
+    t = Thread(target=run_flask)
+    t.daemon = True
+    t.start()
+# --------------------------------------------
 
 # --- DATABASE MODELLARI ---
 class Base(DeclarativeBase): pass
@@ -799,6 +820,8 @@ async def reg_confirm(update, context):
 
 
 def main():
+    keep_alive()
+    
     app = Application.builder().token(TOKEN).build()
     
     # Avtomatik vazifalar (Job Queue)
