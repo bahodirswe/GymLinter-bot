@@ -1,0 +1,4 @@
+python-telegram-bot[job-queue]
+sqlalchemy
+python-dotenv
+psycopg2-binary
