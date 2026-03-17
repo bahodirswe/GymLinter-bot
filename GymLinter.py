@@ -103,7 +103,6 @@ class Booking(Base):
     user: Mapped["User"] = relationship("User", back_populates="bookings")
 
 # DB ulanishi
-engine = create_engine(DB_URL, connect_args={'check_same_thread': False})
 Base.metadata.create_all(engine)
 session_factory = sessionmaker(bind=engine, expire_on_commit=False)
 Session = scoped_session(session_factory)
