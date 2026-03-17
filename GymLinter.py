@@ -21,21 +21,19 @@ load_dotenv()
 
 # --- KONFIGURATSIYA ---
 TOKEN = os.getenv("BOT_TOKEN")
-raw_db_url = os.getenv("DATABASE_URL")
+DATABASE_URL_ENV = os.getenv("DATABASE_URL")
 ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "admin") 
 
-# Agar URL postgres:// bilan boshlansa, uni postgresql:// ga o'zgartiramiz
-if raw_db_url and raw_db_url.startswith("postgres://"):
-    DB_URL = raw_db_url.replace("postgres://", "postgresql://", 1)
+if DATABASE_URL_ENV and DATABASE_URL_ENV.startswith("postgres://"):
+    FINAL_DB_URL = DATABASE_URL_ENV.replace("postgres://", "postgresql://", 1)
 else:
-    DB_URL = raw_db_url or "sqlite:///gym_linter_bot.db"
+    FINAL_DB_URL = DATABASE_URL_ENV or "sqlite:///gym_linter_bot.db"
 
-# Engine yaratishda SQLite va Postgres uchun farqli ulanish
-if "sqlite" in DB_URL:
-    engine = create_engine(DB_URL, connect_args={'check_same_thread': False})
+# Engine yaratish (faqat bir marta shu yerda bo'lishi kerak)
+if "sqlite" in FINAL_DB_URL:
+    engine = create_engine(FINAL_DB_URL, connect_args={'check_same_thread': False})
 else:
-    # PostgreSQL uchun qo'shimcha argumentlar shart emas
-    engine = create_engine(DB_URL)
+    engine = create_engine(FINAL_DB_URL)
 
 
 try:
