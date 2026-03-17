@@ -21,7 +21,7 @@ load_dotenv()
 
 # --- KONFIGURATSIYA ---
 TOKEN = os.getenv("BOT_TOKEN")
-DB_URL = os.getenv("DATABASE_URL")
+raw_db_url = os.getenv("DATABASE_URL")
 ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "admin") 
 
 # Agar URL postgres:// bilan boshlansa, uni postgresql:// ga o'zgartiramiz
