@@ -24,6 +24,20 @@ TOKEN = os.getenv("BOT_TOKEN")
 DB_URL = os.getenv("DATABASE_URL")
 ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "admin") 
 
+# Agar URL postgres:// bilan boshlansa, uni postgresql:// ga o'zgartiramiz
+if raw_db_url and raw_db_url.startswith("postgres://"):
+    DB_URL = raw_db_url.replace("postgres://", "postgresql://", 1)
+else:
+    DB_URL = raw_db_url or "sqlite:///gym_linter_bot.db"
+
+# Engine yaratishda SQLite va Postgres uchun farqli ulanish
+if "sqlite" in DB_URL:
+    engine = create_engine(DB_URL, connect_args={'check_same_thread': False})
+else:
+    # PostgreSQL uchun qo'shimcha argumentlar shart emas
+    engine = create_engine(DB_URL)
+
+
 try:
     ADMIN_ID = int(os.getenv("ADMIN_ID", 0)) 
 except:
@@ -50,7 +64,7 @@ def home():
     return "Bot is running live!"
 
 def run_flask():
-    port = int(os.environ.get('PORT', 10000))
+    port = int(os.environ.get('PORT', 8080))
     app_flask.run(host='0.0.0.0', port=port)
 
 def keep_alive():
