@@ -276,6 +276,7 @@ async def day_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         date_str = query.data.split("_")[1]
         
     now = datetime.now()
+    today_str = now.strftime('%Y-%m-%d')
     hours = [f"{h:02d}:00-{(h+1):02d}:00" for h in range(0, 24)]
     keyboard, row = [], []
 
@@ -287,18 +288,31 @@ async def day_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         bookings_dict = {b.slot_time: b for b in booked}
 
         for h in hours:
-            is_past = (date_str == now.strftime('%Y-%m-%d') and int(h[:2]) <= now.hour)
+            start_h = int(h[:2])
+            end_h = int(h[6:8])
+            if end_h == 0: end_h = 24  # 24:00 holati uchun
+            
+            # O'tib ketgan vaqtni tekshirish
+            is_past = (date_str == today_str and start_h < now.hour)
+            # AYNI VAQTDA DAVOM ETAYOTGAN SMENANI ANIQLASH
+            is_current = (date_str == today_str and start_h <= now.hour < end_h)
             
             if is_past: 
+                # O'tib ketgan smenalar
                 btn = InlineKeyboardButton(f"🕒 {h[:5]}", callback_data="none")
             elif h in bookings_dict:
+                # Band qilingan smenalar
                 b = bookings_dict[h]
                 joined_count = len([n for n in b.joined_users.split(",") if n.strip()]) if b.joined_users else 0
                 total_count = 1 + joined_count
-                g_emoji = "👨" if b.user.gender == "Erkak" else "👩"
-                btn = InlineKeyboardButton(f"{g_emoji} {total_count}/5 @{b.user.nickname}", callback_data=f"join_{b.id}")
+                
+                # Agar hozirgi smena bo'lsa ⚡️, bo'lmasa jinsga qarab emoji
+                status_emoji = "⚡️" if is_current else ("👨" if b.user.gender == "Erkak" else "👩")
+                btn = InlineKeyboardButton(f"{status_emoji} {total_count}/5 @{b.user.nickname}", callback_data=f"join_{b.id}")
             else:
-                btn = InlineKeyboardButton(f"✅ {h}", callback_data=f"slot_{h}_{date_str}")
+                # Bo'sh smenalar (Hozirgi vaqt bo'lsa ⚡️ bilan ajratiladi)
+                prefix = "⚡️" if is_current else "✅"
+                btn = InlineKeyboardButton(f"{prefix} {h}", callback_data=f"slot_{h}_{date_str}")
             
             row.append(btn)
             if len(row) == 2: 
@@ -308,17 +322,15 @@ async def day_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if row: keyboard.append(row)
         keyboard.append([InlineKeyboardButton("❌ Smenamni bekor qilish", callback_data="cancel_my_slot")])
         
-        # Xatolikni oldini olish uchun try-except
         try:
             await query.edit_message_text(
-                f"📅 <b>{date_str}</b> jadvali (Maks: 5 kishi):", 
+                f"📅 <b>{date_str}</b> jadvali (Maks: 5 kishi):\n"
+                f"<i>(⚡️ - ayni vaqtdagi smena)</i>", 
                 reply_markup=InlineKeyboardMarkup(keyboard), 
                 parse_mode=ParseMode.HTML
             )
         except Exception as e:
-            if "Message is not modified" in str(e):
-                pass # Xabar o'zgarmagan bo'lsa xato chiqarmaydi
-            else:
+            if "Message is not modified" not in str(e):
                 logger.error(f"day_callback error: {e}")
 
 async def slot_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -400,11 +412,32 @@ async def slot_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             target_date = b.date
             joined_list = [n.strip() for n in b.joined_users.split(",") if n.strip()]
             user_nick = f"@{user.nickname}"
-            if b.user_id == user_id or user_nick in joined_list: return
-            if len(joined_list) + 1 >= 5: return # Maksimal 5 kishi
+            
+            if b.user_id == user_id or user_nick in joined_list:
+                await query.answer("Siz allaqachon ushbu smenadasiz!", show_alert=True)
+                return
+            if len(joined_list) + 1 >= 5:
+                await query.answer("Kecherasiz, bu smenada joy qolmagan (Maks 5 kishi)!", show_alert=True)
+                return
+                
             joined_list.append(user_nick)
             b.joined_users = ", ".join(joined_list)
             session.add(b)
+            session.commit() # Joinni saqlash
+
+            # JOIN QILGANGA HAM ESLATMA
+            try:
+                await context.bot.send_message(
+                    chat_id=user_id,
+                    text=(
+                        f"🤝 <b>Smenaga muvaffaqiyatli qo'shildingiz!</b>\n"
+                        f"⏰ <b>Vaqt:</b> {b.slot_time}\n\n"
+                        f"📌 Siz ham ushbu smena uchun hisobot (3 rasm) berishga mas'ulsiz."
+                    ),
+                    parse_mode=ParseMode.HTML
+                )
+            except: pass
+            
             await query.answer("Muvaffaqiyatli qo'shildingiz!")
 
         # --- 3. YANGI SMENA BAND QILISH (SLOT) ---
@@ -422,17 +455,43 @@ async def slot_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if daily_count >= 3:
                 await query.answer("Kunlik limit: 3 ta!", show_alert=True)
                 return
-                
-            session.add(Booking(user_id=user_id, slot_time=slot, date=s_date))
             
+            # Bazaga yangi smenani qo'shish
+            new_booking = Booking(user_id=user_id, slot_time=slot, date=s_date)
+            session.add(new_booking)
+            session.commit() # Ma'lumotni bazaga yozishni tasdiqlaymiz
+
+            # 1. Guruhga xabar yuborish (130-topic)
             if GROUP_ID:
                 mention = get_mention(user.tg_id, f"@{user.nickname}")
                 await context.bot.send_message(
                     chat_id=GROUP_ID, 
-                    message_thread_id=INFO_TOPIC_ID, # 130-mavzu
+                    message_thread_id=INFO_TOPIC_ID,
                     text=f"📌 {mention} smena oldi: {slot}", 
                     parse_mode=ParseMode.HTML
                 )
+
+            # 2. FOYDALANUVCHIGA SHAXSIY XABAR (ESLATMA) YUBORISH
+            reminder_text = (
+                f"✅ <b>Smena band qilindi!</b>\n"
+                f"⏰ <b>Vaqt:</b> {slot}\n"
+                f"📅 <b>Sana:</b> {s_date}\n\n"
+                f"📝 <b>MUHIM QOIDALAR:</b>\n"
+                f"1. Smenangiz tugashiga 10 daqiqa qolganda botga <b>3 ta rasm</b> (zal holati) yuboring.\n"
+                f"2. Hisobot topshirish uchun 📸 <b>'Smenani yakunlash'</b> tugmasidan foydalaning.\n"
+                f"3. Smena tugagach 1 soat ichida hisobot kelmasa, avtomatik <b>+1 jarima</b> beriladi.\n\n"
+                f"🚫 3 ta jarima = <b>Blok!</b>"
+            )
+            
+            try:
+                await context.bot.send_message(
+                    chat_id=user_id, 
+                    text=reminder_text, 
+                    parse_mode=ParseMode.HTML
+                )
+            except Exception as e:
+                logger.error(f"Foydalanuvchiga eslatma yuborishda xato: {e}")
+
             await query.answer("Smena band qilindi!")
 
         if target_date:
