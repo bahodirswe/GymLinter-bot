@@ -1077,3 +1077,7 @@ def main():
     
     logger.info("Bot ishga tushdi...")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
+
+# FUNKSIYADAN TASHQARIDA:
+if __name__ == "__main__":
+    main()
