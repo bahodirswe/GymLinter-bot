@@ -78,7 +78,7 @@ class User(Base):
     __tablename__ = 'users'
     tg_id: Mapped[int] = mapped_column(primary_key=True)
     full_name: Mapped[str] = mapped_column(String)
-    nickname: Mapped[str] = mapped_column(String, index=True)
+    nickname: Mapped[str] = mapped_column(String, index=True, unique=True)
     gender: Mapped[str] = mapped_column(String)
     warnings: Mapped[int] = mapped_column(default=0)
     is_blocked: Mapped[bool] = mapped_column(Boolean, default=False)
@@ -121,6 +121,9 @@ def get_db_session():
         session.close()
 
 REG_NAME, REG_GENDER, REG_NICK, CONFIRM_NICK, UPLOAD_PHOTOS = range(5)
+
+# YANGI QO'SHILADIGAN HOLATLAR (Admin tahrirlashi uchun)
+EDIT_USER_FIELD, EDIT_USER_VALUE = range(5, 7)
 
 # --- UTILS ---
 def get_mention(tg_id, name):
@@ -406,8 +409,8 @@ async def slot_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         # --- 3. YANGI SMENA BAND QILISH (SLOT) ---
         elif data.startswith("slot_"):
-            parts = data.split("_")
-            slot, s_date = parts[1], parts[2]
+            payload = data[len("slot_"):]         
+            slot, s_date = payload.rsplit("_", 1)
             target_date = s_date
             
             daily_count = session.query(Booking).filter(
@@ -444,8 +447,11 @@ async def gym_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         current_b = None
         for b in bookings:
             start_h = int(b.slot_time.split("-")[0].split(":")[0])
-            end_h = int(b.slot_time.split("-")[1].split(":")[0])
-            if start_h <= now.hour < end_h:
+            end_str = b.slot_time.split("-")[1].split(":")[0]
+            end_h = int(end_str)
+            # 24:00 maxsus holat — oxirgi soat (23:xx)
+            is_current = (end_h == 24 and now.hour == 23) or (start_h <= now.hour < end_h)
+            if is_current:
                 current_b = b
                 break
         if current_b:
@@ -711,6 +717,7 @@ async def list_cheaters(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(msg or "Zal toza!", parse_mode=ParseMode.HTML)
 
 async def list_all_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Barcha foydalanuvchilar ro'yxatini tugmalar bilan chiqarish"""
     if update.effective_user.id != ADMIN_ID:
         return
 
@@ -721,26 +728,128 @@ async def list_all_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("Botda hali foydalanuvchilar yo'q.")
             return
 
-        msg = "👥 <b>BOT FOYDALANUVCHILARI:</b>\n\n"
-        msg += "№ | Nick | Ism | Smenalar | Status\n"
-        msg += "━━━━━━━━━━━━━━━━━━━━━\n"
-        
-        for i, u in enumerate(users, 1):
-            status = "🚫" if u.is_blocked else "✅"
-            # Nickname ustiga bosganda profilga o'tish
+        await update.message.reply_text("👥 <b>Barcha foydalanuvchilar boshqaruvi:</b>", parse_mode=ParseMode.HTML)
+
+        for u in users:
+            status = "🚫 Bloklangan" if u.is_blocked else "✅ Faol"
             user_link = get_mention(u.tg_id, f"@{u.nickname}")
             
-            msg += f"{i}. {user_link} | {u.full_name} | {u.completed_count} ta | {status}\n"
+            # Har bir foydalanuvchi uchun alohida xabar va unga biriktirilgan tugmalar
+            text = (
+                f"👤 <b>Foydalanuvchi:</b> {user_link}\n"
+                f"🆔 <b>ID:</b> <code>{u.tg_id}</code>\n"
+                f"📝 <b>Ism:</b> {u.full_name}\n"
+                f"📊 <b>Smenalar:</b> {u.completed_count} ta\n"
+                f"⚠️ <b>Jarimalar:</b> {u.warnings}/3\n"
+                f"📌 <b>Holati:</b> {status}"
+            )
             
-            # Telegram xabar limiti uchun nazorat
-            if len(msg) > 3800:
-                await update.message.reply_text(msg, parse_mode=ParseMode.HTML)
-                msg = ""
+            keyboard = [
+                [
+                    InlineKeyboardButton("✏️ Tahrirlash", callback_data=f"edit_u_{u.tg_id}"),
+                    InlineKeyboardButton("🗑 O'chirish", callback_data=f"del_u_{u.tg_id}")
+                ]
+            ]
+            
+            # Agar foydalanuvchi bloklangan bo'lsa, blokdan chiqarish tugmasini ham qo'shamiz
+            if u.is_blocked:
+                keyboard.append([InlineKeyboardButton("🔓 Blokdan chiqarish", callback_data=f"unblock_{u.tg_id}")])
 
-        if msg:
-            await update.message.reply_text(msg, parse_mode=ParseMode.HTML)
+            await update.message.reply_text(
+                text, 
+                reply_markup=InlineKeyboardMarkup(keyboard), 
+                parse_mode=ParseMode.HTML
+            )
             
 # --- ADMIN FUNKSIYALARI: BLOKDAN CHIQARISH ---
+
+# 1. O'chirish funksiyasi
+async def delete_user_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    data_parts = query.data.split("_")
+    user_id_to_del = int(data_parts[2])
+    
+    # Agar bu shunchaki tasdiqlash so'rovi bo'lsa
+    if len(data_parts) == 3:
+        keyboard = [
+            [
+                InlineKeyboardButton("✅ Ha, o'chirilsin", callback_data=f"{query.data}_confirm"),
+                InlineKeyboardButton("❌ Yo'q, bekor qilish", callback_data="cancel_edit")
+            ]
+        ]
+        await query.edit_message_text("❓ Haqiqatan ham ushbu foydalanuvchini va uning barcha ma'lumotlarini o'chirmoqchimisiz?", reply_markup=InlineKeyboardMarkup(keyboard))
+        return
+
+    # Agar tasdiqlangan bo'lsa (confirm qismi bo'lsa)
+    with get_db_session() as session:
+        user = session.get(User, user_id_to_del)
+        if user:
+            session.query(Booking).filter_by(user_id=user_id_to_del).delete()
+            session.delete(user)
+            await query.answer("Foydalanuvchi butunlay o'chirildi")
+            await query.edit_message_text(f"🗑 ID: {user_id_to_del} tizimdan muvaffaqiyatli o'chirildi.")
+# 2. Tahrirlashni boshlash (Maydonni tanlash)
+async def edit_user_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    user_id = int(query.data.split("_")[2])
+    context.user_data['editing_user_id'] = user_id
+    
+    keyboard = [
+        [InlineKeyboardButton("Ism", callback_data="field_full_name"),
+         InlineKeyboardButton("Nickname", callback_data="field_nickname")],
+        [InlineKeyboardButton("Jins", callback_data="field_gender")],
+        [InlineKeyboardButton("❌ Bekor qilish", callback_data="cancel_edit")]
+    ]
+    await query.edit_message_text("Nimani tahrirlaymiz?", reply_markup=InlineKeyboardMarkup(keyboard))
+    return EDIT_USER_FIELD
+
+# 3. Yangi qiymatni kutish
+async def edit_user_field_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    field = query.data.replace("field_", "")
+    
+    if field == "cancel_edit":
+        await query.edit_message_text("Tahrirlash bekor qilindi.")
+        return ConversationHandler.END
+        
+    context.user_data['editing_field'] = field
+    await query.edit_message_text(f"Yangi qiymatni yuboring ({field}):")
+    return EDIT_USER_VALUE
+
+# 4. Bazaga saqlash
+async def edit_user_save(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    new_value = update.message.text.strip()
+    user_id = context.user_data.get('editing_user_id')
+    field = context.user_data.get('editing_field')
+    
+    with get_db_session() as session:
+        user = session.get(User, user_id)
+        if not user:
+            await update.message.reply_text("Foydalanuvchi topilmadi.")
+            return ConversationHandler.END
+
+        # Agar nickname tahrirlanayotgan bo'lsa, unique-likni tekshiramiz
+        if field == "nickname":
+            new_value = new_value.replace("@", "").lower()
+            existing = session.query(User).filter(User.nickname == new_value, User.tg_id != user_id).first()
+            if existing:
+                await update.message.reply_text("❌ Bu nickname band! Boshqa qiymat yuboring:")
+                return EDIT_USER_VALUE
+
+        # Ma'lumotni yangilash
+        setattr(user, field, new_value)
+        await update.message.reply_text(
+            f"✅ Muvaffaqiyatli yangilandi!\n<b>{field}:</b> {new_value}", 
+            reply_markup=get_main_menu(ADMIN_ID),
+            parse_mode=ParseMode.HTML
+        )
+        
+        # Foydalanuvchini xabardor qilish
+        try:
+            await context.bot.send_message(user_id, f"⚠️ Ma'lumotlaringiz admin tomonidan yangilandi:\n<b>{field}:</b> {new_value}", parse_mode=ParseMode.HTML)
+        except: pass
+            
+    return ConversationHandler.END
 
 async def manage_blocked_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
@@ -816,9 +925,19 @@ async def reg_gender(update, context):
     await update.message.reply_text("Login (nickname) yuboring:")
     return REG_NICK
 
-async def reg_nick(update, context):
-    context.user_data['temp_nick'] = update.message.text.lower().strip()
-    await update.message.reply_text("Loginni qayta yozing:"); return CONFIRM_NICK
+async def reg_nick(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    nick = update.message.text.lower().strip().replace("@", "")
+    
+    with get_db_session() as session:
+        # Bazada bunday nick bor-yo'qligini tekshirish
+        existing_user = session.query(User).filter(User.nickname == nick).first()
+        if existing_user:
+            await update.message.reply_text("❌ Bu login band. Iltimos, boshqa login yuboring:")
+            return REG_NICK
+            
+    context.user_data['temp_nick'] = nick
+    await update.message.reply_text(f"Tasdiqlash uchun <b>{nick}</b> ni qayta yozing:", parse_mode=ParseMode.HTML)
+    return CONFIRM_NICK
 
 async def reg_confirm(update, context):
     if update.message.text.lower().strip() == context.user_data['temp_nick']:
@@ -835,12 +954,25 @@ def main():
     
     app = Application.builder().token(TOKEN).build()
     
-    # Avtomatik vazifalar (Job Queue)
+    # 1. Avtomatik vazifalar (Job Queue)
     if app.job_queue:
         app.job_queue.run_daily(weekly_winner, time=datetime.strptime("21:00", "%H:%M").time(), days=(6,))
         app.job_queue.run_repeating(check_pending_reports, interval=900, first=10)
 
-    conv = ConversationHandler(
+    # 2. ADMIN UCHUN TAHRIRLASH (ConversationHandler)
+    # Bu handler ro'yxatdan o'tish handleridan alohida bo'lishi kerak
+    admin_edit_conv = ConversationHandler(
+        entry_points=[CallbackQueryHandler(edit_user_start, pattern="^edit_u_")],
+        states={
+            EDIT_USER_FIELD: [CallbackQueryHandler(edit_user_field_chosen, pattern="^field_|^cancel_edit")],
+            EDIT_USER_VALUE: [MessageHandler(filters.TEXT & ~filters.COMMAND, edit_user_save)],
+        },
+        fallbacks=[CallbackQueryHandler(lambda u, c: ConversationHandler.END, pattern="^cancel_edit")],
+        allow_reentry=True
+    )
+
+    # 3. RO'YXATDAN O'TISH (Mavjud ConversationHandler)
+    registration_conv = ConversationHandler(
         entry_points=[
             CommandHandler("start", start), 
             MessageHandler(filters.Regex(r"📸 Smenani yakunlash"), finish_start)
@@ -853,7 +985,6 @@ def main():
             UPLOAD_PHOTOS: [MessageHandler(filters.PHOTO, handle_photos)],
         },
         fallbacks=[
-            # TUZATISH: user_id lambda orqali uzatildi
             CommandHandler("cancel", lambda u, c: u.message.reply_text(
                 "Bekor qilindi.", 
                 reply_markup=get_main_menu(u.effective_user.id)
@@ -862,24 +993,24 @@ def main():
         allow_reentry=True
     )
 
-    # Handlerlarni qo'shish
-    app.add_handler(conv)
+# HANDLERLARNI QO'SHISH (Tartib muhim!)
+    app.add_handler(admin_edit_conv) # Yangi tahrirlash handleri
+    app.add_handler(registration_conv)
+    
+    # O'chirish uchun oddiy CallbackQueryHandler
+    app.add_handler(CallbackQueryHandler(delete_user_callback, pattern="^del_u_"))
+
+    # --- Qolgan barcha menyu handlerlari o'zgarishsiz qoladi ---
     app.add_handler(MessageHandler(filters.Regex(r"📅 Smenalar"), lambda u, c: u.message.reply_text("Kunni tanlang:", reply_markup=get_days_keyboard())))
     app.add_handler(MessageHandler(filters.Regex(r"👨‍✈️ Admin bilan bog'lanish"), contact_admin))
-    
-    # ADMIN UCHUN YANGI HANDLERLAR
     app.add_handler(MessageHandler(filters.Regex(r"👥 Barcha foydalanuvchilar"), list_all_users))
     app.add_handler(MessageHandler(filters.Regex(r"🔐 Bloklanganlarni boshqarish"), manage_blocked_users))
     app.add_handler(CallbackQueryHandler(unblock_callback, pattern="^unblock_"))
-    
-    # BOSHQA MENU HANDLERLARI
     app.add_handler(MessageHandler(filters.Regex(r"📊 Statistika"), show_stats))
     app.add_handler(MessageHandler(filters.Regex(r"🏆 Reyting"), show_leaderboard))
     app.add_handler(MessageHandler(filters.Regex(r"🚫 Chiterlar"), list_cheaters))
     app.add_handler(MessageHandler(filters.Regex(r"❓ Zal holati"), gym_status))
     app.add_handler(MessageHandler(filters.Regex(r"⚠️ Jarimalarim"), show_my_warnings))
-    
-    # ADMIN JAVOBLARI VA CALLBACKLAR
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_admin_reply))
     app.add_handler(CallbackQueryHandler(day_callback, pattern="^day_"))
     app.add_handler(CallbackQueryHandler(slot_callback, pattern="^slot_|^join_|^cancel_my_slot|^none$"))
@@ -887,6 +1018,3 @@ def main():
     
     logger.info("Bot ishga tushdi...")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
-
-if __name__ == "__main__":
-    main()
